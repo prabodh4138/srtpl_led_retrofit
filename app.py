@@ -26,13 +26,13 @@ from models import (
 st.set_page_config(page_title="SRTPL LED Retrofit", layout="wide")
 
 # -------------------------------------------------
-# DATABASE INIT (SAFE)
+# DATABASE INIT (ULTRA SAFE)
 # -------------------------------------------------
-@st.cache_resource
-def get_session():
+
+def get_db_session():
     return SessionLocal()
 
-db: Session = get_session()
+db = get_db_session()
 
 # -------------------------------------------------
 # SESSION INIT
