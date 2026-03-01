@@ -30,7 +30,6 @@ st.set_page_config(page_title="SRTPL LED Retrofit", layout="wide")
 # -------------------------------------------------
 @st.cache_resource
 def get_session():
-    Base.metadata.create_all(bind=engine)
     return SessionLocal()
 
 db: Session = get_session()
