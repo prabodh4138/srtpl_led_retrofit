@@ -1,12 +1,10 @@
-from auto_correction_layer import auto_correct_installed_excess
-from data_audit_layer import data_integrity_audit
 import streamlit as st
-import pandas as pd
 from datetime import date
 from sqlalchemy.orm import Session
-from sqlalchemy import func, and_
+from sqlalchemy import func
+import pandas as pd
 
-from database import SessionLocal
+from database import SessionLocal, engine
 from auth import (
     validate_password_strength,
     verify_password,
@@ -23,33 +21,38 @@ from models import (
 )
 
 # -------------------------------------------------
-# DATABASE INIT
+# PAGE CONFIG
 # -------------------------------------------------
-db: Session = SessionLocal()
-Base.metadata.create_all(bind=db.get_bind())
-
-st.set_page_config(
-    page_title="SRTPL LED Retrofit",
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
-from ui_loader import load_css
-load_css("assets/mobile.css")
-
-HOURS_PER_DAY = 12
-DAYS_PER_YEAR = 365
-RATE_PER_UNIT = 8
+st.set_page_config(page_title="SRTPL LED Retrofit", layout="wide")
 
 # -------------------------------------------------
-# SESSION
+# DATABASE INIT (SAFE)
 # -------------------------------------------------
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-    st.session_state.user = None
+@st.cache_resource
+def get_session():
+    Base.metadata.create_all(bind=engine)
+    return SessionLocal()
+
+db: Session = get_session()
+
+# -------------------------------------------------
+# SESSION INIT
+# -------------------------------------------------
+def init_session():
+    defaults = {
+        "logged_in": False,
+        "user": None,
+        "active_tab": "Dashboard"
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+init_session()
 
 def logout():
-    st.session_state.logged_in = False
-    st.session_state.user = None
+    st.session_state.clear()
+    st.rerun()
 
 # -------------------------------------------------
 # LOGIN
@@ -57,378 +60,392 @@ def logout():
 def login_page():
     st.markdown("## 🔐 SRTPL LED Retrofit System")
 
-    employee_id = st.text_input("Employee ID").strip().upper()
+    emp_id = st.text_input("Employee ID", key="login_emp").strip().upper()
+    if not emp_id:
+        return
 
-    if employee_id:
-        user = get_user_by_employee_id(db, employee_id)
+    user = get_user_by_employee_id(db, emp_id)
 
-        if not user:
-            st.error("Invalid Employee ID")
-            return
+    if not user:
+        st.error("Invalid Employee ID")
+        return
 
-        if not user.password_hash:
-            st.success(f"Welcome {user.full_name}")
-            new_password = st.text_input("Create Password", type="password")
-            confirm_password = st.text_input("Confirm Password", type="password")
+    if not user.password_hash:
+        new_pass = st.text_input("Create Password", type="password")
+        confirm = st.text_input("Confirm Password", type="password")
 
-            if st.button("Set Password"):
-                if new_password != confirm_password:
-                    st.error("Passwords do not match")
-                    return
-                if not validate_password_strength(new_password):
-                    st.error("Password must contain letters, numbers and special character.")
-                    return
-                set_user_password(db, user, new_password)
-                st.success("Password set successfully.")
+        if st.button("Set Password"):
+            if new_pass != confirm:
+                st.error("Passwords do not match")
                 return
-        else:
-            password = st.text_input("Password", type="password")
-            if st.button("Login"):
-                if verify_password(password, user.password_hash):
-                    st.session_state.logged_in = True
-                    st.session_state.user = user
-                    st.rerun()
-                else:
-                    st.error("Incorrect Password")
+            if not validate_password_strength(new_pass):
+                st.error("Weak password")
+                return
+
+            set_user_password(db, user, new_pass)
+            st.session_state.logged_in = True
+            st.session_state.user = user
+            st.rerun()
+    else:
+        password = st.text_input("Password", type="password")
+        if st.button("Login"):
+            if verify_password(password, user.password_hash):
+                st.session_state.logged_in = True
+                st.session_state.user = user
+                st.rerun()
+            else:
+                st.error("Incorrect Password")
 
 # -------------------------------------------------
-# DASHBOARD FULL RESTORED
+# DASHBOARD (UPDATED – TEAM + CHAINAGE FIXTURE)
 # -------------------------------------------------
-# (Everything above remains EXACTLY SAME as your uploaded file)
+def dashboard_page():
 
-# -------------------------------------------------
-# DASHBOARD FULL RESTORED
-# -------------------------------------------------
-def project_dashboard():
+    st.markdown("## 📊 Project Dashboard")
 
-    st.markdown("### 📊 Project Dashboard")
-
-    # DATE FILTER
-    colf1, colf2 = st.columns(2)
-    from_date = colf1.date_input("From Date", value=date(2025,1,1))
-    to_date = colf2.date_input("To Date", value=date.today())
-
-    date_filter_d = and_(DismantleLog.entry_date >= from_date,
-                         DismantleLog.entry_date <= to_date)
-
-    date_filter_i = and_(InstallLog.entry_date >= from_date,
-                         InstallLog.entry_date <= to_date)
-    from executive_layer import ultra_mobile_executive_layer, advanced_export_layer
-
-    # MAIN KPIs
+    # -----------------------------
+    # GLOBAL TOTALS
+    # -----------------------------
     total_target = db.query(func.sum(MasterChainage.target_qty)).scalar() or 0
-    total_dismantled = db.query(func.sum(DismantleLog.qty)).filter(date_filter_d).scalar() or 0
-    total_installed = db.query(func.sum(InstallLog.qty)).filter(date_filter_i).scalar() or 0
+    total_dismantled = db.query(func.sum(DismantleLog.qty)).scalar() or 0
+    total_installed = db.query(func.sum(InstallLog.qty)).scalar() or 0
 
-    effective_installed = min(total_installed, total_dismantled)
-    wip = total_dismantled - effective_installed
-    completion = (effective_installed / total_target * 100) if total_target else 0
+    effective_install = min(total_installed, total_target)
+    remaining_balance = max(total_target - effective_install, 0)
 
-    col1, col2, col3, col4, col5 = st.columns(5)
+    col1, col2 = st.columns(2)
     col1.metric("Total Target", total_target)
-    col2.metric("Dismantled", total_dismantled)
-    col3.metric("Installed", effective_installed)
-    col4.metric("WIP", wip)
-    col5.metric("Completion %", f"{completion:.2f}%")
+    col2.metric("Remaining Balance", remaining_balance)
 
-    # ENERGY
-    fixtures = db.query(Fixture).all()
-    total_units_saved = 0
-    fixture_energy_data = []
-
-    for f in fixtures:
-        installed_qty = db.query(func.sum(InstallLog.qty)).filter(
-            and_(InstallLog.old_watt == f.old_watt, date_filter_i)
-        ).scalar() or 0
-
-        units = (
-            installed_qty *
-            f.saving_watt *
-            HOURS_PER_DAY *
-            DAYS_PER_YEAR
-        ) / 1000
-
-        total_units_saved += units
-
-        fixture_energy_data.append({
-            "Old Watt": f.old_watt,
-            "Annual Units Saved": units
-        })
-
-    total_rupees = total_units_saved * RATE_PER_UNIT
+    col3, col4 = st.columns(2)
+    col3.metric("Total Dismantled", total_dismantled)
+    col4.metric("Total Installed", effective_install)
 
     st.divider()
-    col6, col7 = st.columns(2)
-    col6.metric("Annual Energy Saved (kWh)", f"{total_units_saved:,.2f}")
-    col7.metric("Annual Saving (₹)", f"{total_rupees:,.2f}")
 
-    # TEAM PERFORMANCE
-    st.divider()
-    st.subheader("🏆 Team Performance")
+    # -----------------------------
+    # TEAM-WISE DETAILS
+    # -----------------------------
+    st.markdown("### 👷 Team Performance")
 
-    team_data = db.query(
-        InstallLog.team,
-        func.sum(InstallLog.qty)
-    ).filter(date_filter_i).group_by(InstallLog.team).all()
+    teams = db.query(MasterChainage.vendor_assigned).distinct().all()
+    teams = [t[0] for t in teams]
 
-    team_summary = {team: qty for team, qty in team_data}
+    for team in teams:
 
-    col8, col9 = st.columns(2)
-    col8.metric("Team A Installed", team_summary.get("A", 0))
-    col9.metric("Team B Installed", team_summary.get("B", 0))
-
-    # =====================================================
-    # ✅ ADVANCED DROPDOWN CHAINAGE PROGRESS (UPGRADED)
-    # =====================================================
-
-    st.divider()
-    st.subheader("📍 Chainage & Fixture Progress")
-
-    chainages = db.query(MasterChainage.chainage_code).distinct().all()
-    chainage_list = sorted([c[0] for c in chainages])
-
-    if chainage_list:
-
-        selected_chainage = st.selectbox("Select Chainage", chainage_list)
-
-        # CHAINAGE TOTALS
-        chain_target = db.query(func.sum(MasterChainage.target_qty)).filter(
-            MasterChainage.chainage_code == selected_chainage
+        team_target = db.query(func.sum(MasterChainage.target_qty)).filter(
+            MasterChainage.vendor_assigned == team
         ).scalar() or 0
 
-        chain_dismantled = db.query(func.sum(DismantleLog.qty)).filter(
-            and_(DismantleLog.chainage_code == selected_chainage, date_filter_d)
+        team_dismantled = db.query(func.sum(DismantleLog.qty)).filter(
+            DismantleLog.team == team
         ).scalar() or 0
 
-        chain_installed = db.query(func.sum(InstallLog.qty)).filter(
-            and_(InstallLog.chainage_code == selected_chainage, date_filter_i)
+        team_installed = db.query(func.sum(InstallLog.qty)).filter(
+            InstallLog.team == team
         ).scalar() or 0
 
-        chain_completion = (chain_installed / chain_target * 100) if chain_target else 0
+        effective_team_install = min(team_installed, team_target)
+        team_balance = max(team_target - effective_team_install, 0)
 
-        colc1, colc2, colc3, colc4 = st.columns(4)
-        colc1.metric("Chainage Target", chain_target)
-        colc2.metric("Chainage Dismantled", chain_dismantled)
-        colc3.metric("Chainage Installed", chain_installed)
-        colc4.metric("Completion %", f"{chain_completion:.2f}%")
+        st.markdown(f"#### Team {team}")
 
-        st.progress(min(chain_completion / 100, 1.0))
+        c1, c2 = st.columns(2)
+        c1.metric("Target", team_target)
+        c2.metric("Balance", team_balance)
 
-        # FIXTURE DROPDOWN
-        fixture_records = db.query(MasterChainage.old_watt).filter(
-            MasterChainage.chainage_code == selected_chainage
-        ).distinct().all()
+        c3, c4 = st.columns(2)
+        c3.metric("Installed", effective_team_install)
+        c4.metric("Dismantled", team_dismantled)
 
-        fixture_list = sorted([f[0] for f in fixture_records])
+        progress = (
+            effective_team_install / team_target
+            if team_target else 0
+        )
+        progress = max(0, min(progress, 1))
 
-        if fixture_list:
+        st.progress(progress, text=f"Completion: {progress*100:.1f}%")
 
-            selected_fixture = st.selectbox("Select Fixture (Old Watt)", fixture_list)
+        st.divider()
 
-            fix_target = db.query(MasterChainage.target_qty).filter(
-                MasterChainage.chainage_code == selected_chainage,
-                MasterChainage.old_watt == selected_fixture
-            ).scalar() or 0
+    # -----------------------------
+    # CHAINAGE + FIXTURE PROGRESS
+    # -----------------------------
+    st.markdown("### 📍 Chainage / Fixture Progress")
 
-            fix_dismantled = db.query(func.sum(DismantleLog.qty)).filter(
-                DismantleLog.chainage_code == selected_chainage,
-                DismantleLog.old_watt == selected_fixture
-            ).scalar() or 0
+    chainage_list = db.query(MasterChainage.chainage_code).distinct().all()
+    chainage_list = [c[0] for c in chainage_list]
 
-            fix_installed = db.query(func.sum(InstallLog.qty)).filter(
-                InstallLog.chainage_code == selected_chainage,
-                InstallLog.old_watt == selected_fixture
-            ).scalar() or 0
+    if not chainage_list:
+        st.info("No chainage data available.")
+        return
 
-            fix_completion = (fix_installed / fix_target * 100) if fix_target else 0
+    selected_chainage = st.selectbox(
+        "Select Chainage",
+        chainage_list,
+        key="dashboard_chainage"
+    )
 
-            colf1, colf2, colf3, colf4 = st.columns(4)
-            colf1.metric("Fixture Target", fix_target)
-            colf2.metric("Fixture Dismantled", fix_dismantled)
-            colf3.metric("Fixture Installed", fix_installed)
-            colf4.metric("Completion %", f"{fix_completion:.2f}%")
+    fixture_records = db.query(MasterChainage).filter(
+        MasterChainage.chainage_code == selected_chainage
+    ).all()
 
-            st.progress(min(fix_completion / 100, 1.0))
-            ultra_mobile_executive_layer(db, from_date, to_date)
-            advanced_export_layer(db, from_date, to_date)
-            data_integrity_audit(db)
+    for record in fixture_records:
+
+        installed = db.query(func.sum(InstallLog.qty)).filter(
+            InstallLog.chainage_code == selected_chainage,
+            InstallLog.old_watt == record.old_watt
+        ).scalar() or 0
+
+        dismantled = db.query(func.sum(DismantleLog.qty)).filter(
+            DismantleLog.chainage_code == selected_chainage,
+            DismantleLog.old_watt == record.old_watt
+        ).scalar() or 0
+
+        effective_installed = min(installed, record.target_qty)
+        balance = max(record.target_qty - effective_installed, 0)
+
+        progress = (
+            effective_installed / record.target_qty
+            if record.target_qty else 0
+        )
+        progress = max(0, min(progress, 1))
+
+        st.markdown(f"**Fixture {record.old_watt}W**")
+
+        f1, f2 = st.columns(2)
+        f1.metric("Target", record.target_qty)
+        f2.metric("Balance", balance)
+
+        f3, f4 = st.columns(2)
+        f3.metric("Installed", effective_installed)
+        f4.metric("Dismantled", dismantled)
+
+        st.progress(
+            progress,
+            text=f"Completion: {progress*100:.1f}%"
+        )
+
+        st.divider()
 
 # -------------------------------------------------
-# STRICT WORK ENTRY
+# ENTRY (UPDATED WITH LIVE TARGET + BALANCE DISPLAY)
 # -------------------------------------------------
-def work_entry_page():
+def entry_page():
 
     user = st.session_state.user
-    st.markdown("### 🛠 Work Entry")
+
+    st.markdown("## 🛠 Work Entry")
 
     entry_date = st.date_input("Entry Date", value=date.today())
 
-    if user.role == "vendor":
-        team = user.vendor_team
-        st.info(f"Team: {team}")
-        chainage_records = db.query(MasterChainage).filter(
-            MasterChainage.vendor_assigned == team
-        ).all()
-    else:
-        team = st.selectbox("Select Team", ["A", "B"])
-        chainage_records = db.query(MasterChainage).filter(
-            MasterChainage.vendor_assigned == team
-        ).all()
+    teams = db.query(MasterChainage.vendor_assigned).distinct().all()
+    team_list = [t[0] for t in teams]
+
+    selected_team = st.selectbox("Select Team", team_list, key="entry_team")
+
+    chainage_records = db.query(MasterChainage).filter(
+        MasterChainage.vendor_assigned == selected_team
+    ).all()
 
     if not chainage_records:
         st.warning("No chainage assigned.")
         return
 
-    chainage_list = sorted(list(set([c.chainage_code for c in chainage_records])))
-    selected_chainage = st.selectbox("Select Chainage", chainage_list)
+    chainage_list = sorted(set(c.chainage_code for c in chainage_records))
+    selected_chainage = st.selectbox("Select Chainage", chainage_list, key="entry_chainage")
 
-    fixture_records = db.query(MasterChainage).filter(
-        MasterChainage.chainage_code == selected_chainage,
-        MasterChainage.vendor_assigned == team
-    ).all()
+    fixture_records = [
+        c for c in chainage_records
+        if c.chainage_code == selected_chainage
+    ]
 
     fixture_list = [f.old_watt for f in fixture_records]
-    selected_watt = st.selectbox("Select Old Fixture Watt", fixture_list)
+    selected_fixture = st.selectbox("Select Fixture", fixture_list, key="entry_fixture")
 
-    activity = st.radio("Activity", ["Dismantle", "Install"])
-    qty = st.number_input("Quantity", min_value=1)
-    manpower = st.number_input("Manpower Deployed", min_value=1)
+    # ---------------------------------
+    # TARGET FETCH
+    # ---------------------------------
+    target_qty = next(
+        (c.target_qty for c in fixture_records if c.old_watt == selected_fixture),
+        0
+    )
 
-    target_record = db.query(MasterChainage).filter(
-        MasterChainage.chainage_code == selected_chainage,
-        MasterChainage.old_watt == selected_watt
-    ).first()
-
-    target_qty = target_record.target_qty
-
-    dismantled = db.query(func.sum(DismantleLog.qty)).filter(
+    total_dismantled = db.query(func.sum(DismantleLog.qty)).filter(
         DismantleLog.chainage_code == selected_chainage,
-        DismantleLog.old_watt == selected_watt
+        DismantleLog.old_watt == selected_fixture
     ).scalar() or 0
 
-    installed = db.query(func.sum(InstallLog.qty)).filter(
+    total_installed = db.query(func.sum(InstallLog.qty)).filter(
         InstallLog.chainage_code == selected_chainage,
-        InstallLog.old_watt == selected_watt
+        InstallLog.old_watt == selected_fixture
     ).scalar() or 0
 
-    st.info(f"Target: {target_qty}")
-    st.info(f"Dismantled: {dismantled}")
-    st.info(f"Installed: {installed}")
+    st.markdown("### 📊 Current Status")
 
-    if st.button("Submit Entry"):
+    col1, col2 = st.columns(2)
+    col1.metric("Target Qty", target_qty)
+    col2.metric("Total Dismantled", total_dismantled)
+
+    col3, col4 = st.columns(2)
+    col3.metric("Total Installed", total_installed)
+    col4.metric("Remaining Target", max(target_qty - total_installed, 0))
+
+    st.divider()
+
+    # ---------------------------------
+    # ACTIVITY SELECTION
+    # ---------------------------------
+    activity = st.radio("Activity", ["Dismantle", "Install"], key="entry_activity")
+
+    qty = st.number_input("Quantity", min_value=1, key="entry_qty")
+
+    # ---------------------------------
+    # LIVE BALANCE PREVIEW
+    # ---------------------------------
+    if activity == "Dismantle":
+        available_balance = target_qty - total_dismantled
+        post_balance = available_balance - qty
+
+        st.info(f"Available for Dismantle: {available_balance}")
+        st.info(f"Balance After Entry: {post_balance}")
+
+    else:
+        available_balance = total_dismantled - total_installed
+        post_balance = available_balance - qty
+
+        st.info(f"Available for Install: {available_balance}")
+        st.info(f"Balance After Entry: {post_balance}")
+
+    st.divider()
+
+    # ---------------------------------
+    # SUBMIT
+    # ---------------------------------
+    if st.button("Submit"):
 
         if activity == "Dismantle":
-            if dismantled + qty > target_qty:
-                st.error("Cannot exceed dismantle target.")
+            if total_dismantled + qty > target_qty:
+                st.error("Cannot dismantle more than target quantity.")
                 return
 
             db.add(DismantleLog(
                 entry_date=entry_date,
                 chainage_code=selected_chainage,
-                old_watt=selected_watt,
+                old_watt=selected_fixture,
                 qty=qty,
-                manpower_deployed=manpower,
-                team=team,
+                team=selected_team,
                 entered_by=user.id
             ))
 
         else:
-            if installed + qty > dismantled:
+            if total_installed + qty > total_dismantled:
                 st.error("Install cannot exceed dismantled quantity.")
                 return
-
-            fixture_map = db.query(Fixture).filter(
-                Fixture.old_watt == selected_watt
-            ).first()
 
             db.add(InstallLog(
                 entry_date=entry_date,
                 chainage_code=selected_chainage,
-                old_watt=selected_watt,
-                new_watt=fixture_map.new_watt,
+                old_watt=selected_fixture,
+                new_watt=selected_fixture,
                 qty=qty,
-                manpower_deployed=manpower,
-                team=team,
+                team=selected_team,
                 entered_by=user.id
             ))
 
         db.commit()
-        st.success("Entry Saved")
+        st.success("Entry Saved Successfully")
         st.rerun()
 
 # -------------------------------------------------
-# ADMIN PANEL
+# USER REPORT
 # -------------------------------------------------
-def admin_panel():
+def report_page():
 
-    st.markdown("### 🔐 Admin Management Panel")
+    st.markdown("## 📄 My Entry Report")
 
-    # -------------------------------
-    # USER CREATION SECTION
-    # -------------------------------
-    st.subheader("👤 Create New User")
-
-    emp_id = st.text_input("Employee ID").upper()
-    name = st.text_input("Full Name")
-    role = st.selectbox("Role", ["vendor", "staff"])
-    team = st.selectbox("Vendor Team", ["A", "B"]) if role == "vendor" else None
-
-    if st.button("Create User"):
-        if db.query(User).filter(User.employee_id == emp_id).first():
-            st.error("User already exists.")
-        else:
-            new_user = User(
-                employee_id=emp_id,
-                full_name=name,
-                role=role,
-                vendor_team=team
-            )
-            db.add(new_user)
-            db.commit()
-            st.success("User Created Successfully.")
-
-    # -------------------------------
-    # DATA INTEGRITY SECTION
-    # -------------------------------
-    from data_audit_layer import data_integrity_audit
-    from auto_correction_layer import auto_correct_installed_excess
-
-    data_integrity_audit(db)
-
-    # -------------------------------
-    # AUTO CORRECTION SECTION
-    # -------------------------------
-    auto_correct_installed_excess(db)
-
-# -------------------------------------------------
-# MAIN
-# -------------------------------------------------
-def dashboard_page():
     user = st.session_state.user
 
-    st.sidebar.markdown(f"**{user.full_name}**")
+    data = db.query(InstallLog).filter(
+        InstallLog.entered_by == user.id
+    ).all()
+
+    df = pd.DataFrame([{
+        "Date": r.entry_date,
+        "Chainage": r.chainage_code,
+        "Fixture": r.old_watt,
+        "Qty": r.qty,
+        "Team": r.team
+    } for r in data])
+
+    if df.empty:
+        st.info("No entries found.")
+        return
+
+    st.dataframe(df, use_container_width=True)
+
+    st.download_button(
+        "Download My Report",
+        df.to_csv(index=False),
+        file_name="my_report.csv"
+    )
+
+# -------------------------------------------------
+# ADMIN PAGE
+# -------------------------------------------------
+def admin_page():
+
+    st.markdown("## 🛡 Admin Control Panel")
+
+    install_data = db.query(InstallLog).all()
+    dismantle_data = db.query(DismantleLog).all()
+
+    install_df = pd.DataFrame([vars(r) for r in install_data])
+    dismantle_df = pd.DataFrame([vars(r) for r in dismantle_data])
+
+    final_df = pd.concat([install_df, dismantle_df], ignore_index=True)
+
+    st.dataframe(final_df, use_container_width=True)
+
+    st.download_button(
+        "Download Full Project Report",
+        final_df.to_csv(index=False),
+        file_name="full_project_report.csv"
+    )
+
+# -------------------------------------------------
+# MAIN ROUTER
+# -------------------------------------------------
+def main_app():
+
+    user = st.session_state.user
+
+    st.sidebar.markdown(f"### 👤 {user.full_name}")
     st.sidebar.markdown(f"Role: {user.role}")
 
     if st.sidebar.button("Logout"):
         logout()
-        st.rerun()
+
+    tabs = ["Dashboard", "Entry", "Report"]
 
     if user.role == "admin":
-        tab1, tab2, tab3 = st.tabs(["Dashboard", "Work Entry", "Admin"])
-        with tab1:
-            project_dashboard()
-        with tab2:
-            work_entry_page()
-        with tab3:
-            admin_panel()
-    else:
-        tab1, tab2 = st.tabs(["Dashboard", "Work Entry"])
-        with tab1:
-            project_dashboard()
-        with tab2:
-            work_entry_page()
+        tabs.append("Admin")
 
+    tab = st.radio("Navigation", tabs, horizontal=True)
+
+    if tab == "Dashboard":
+        dashboard_page()
+    elif tab == "Entry":
+        entry_page()
+    elif tab == "Report":
+        report_page()
+    elif tab == "Admin" and user.role == "admin":
+        admin_page()
+
+# -------------------------------------------------
+# APP ENTRY
+# -------------------------------------------------
 if not st.session_state.logged_in:
     login_page()
 else:
-    dashboard_page()
+    main_app()
