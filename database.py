@@ -1,6 +1,6 @@
 import os
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, declarative_base
 
 # ---------------------------------------
 # DATABASE URL (From Streamlit Secrets)
@@ -11,7 +11,7 @@ if not DATABASE_URL:
     raise ValueError("DATABASE_URL not set")
 
 # ---------------------------------------
-# ENGINE CONFIG (Pooler Safe)
+# ENGINE CONFIG (Production Safe)
 # ---------------------------------------
 engine = create_engine(
     DATABASE_URL,
@@ -26,3 +26,8 @@ SessionLocal = sessionmaker(
     autoflush=False,
     bind=engine
 )
+
+# ---------------------------------------
+# BASE DECLARATION (IMPORTANT)
+# ---------------------------------------
+Base = declarative_base()
